@@ -27,7 +27,9 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	db, err := azora.Connect(ctx, demo.Env("AZORA_URL"), azora.WithAPIKey(demo.Env("AZORA_API_KEY")))
+	// Two values: the database's public URL and a private token. With
+	// both in the environment this is azora.ConnectEnv(ctx).
+	db, err := azora.Connect(ctx, demo.Env("AZORA_URL"), azora.WithToken(demo.Env("AZORA_TOKEN")))
 	demo.Check(err)
 	defer db.Close()
 	if w, ok := db.Welcome(); ok {
