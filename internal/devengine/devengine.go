@@ -367,6 +367,12 @@ func (e *Engine) Restart() error {
 	return e.Serve()
 }
 
+// ConnectURL returns the database's public URL (what `azora connect`
+// prints): the HTTP address, the database, the server's key.
+func (e *Engine) ConnectURL(db string) string {
+	return "http://" + e.HTTPAddr + "/" + db + "?key=" + e.ServerKey
+}
+
 // URL returns the TCP connection string of a database, pinning the
 // server's key.
 func (e *Engine) URL(db string) string {
