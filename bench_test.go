@@ -59,6 +59,28 @@ func BenchmarkPointRead(b *testing.B) {
 	}
 }
 
+// The same through the database's public URL, which connects over
+// WebSocket: what the convenience costs against raw TCP.
+func BenchmarkPointReadPublicURL(b *testing.B) {
+	benchDB(b, 1000)
+	f := engine(b)
+	db := f.connectURL(b, f.ConnectURL(testDB), azora.WithToken(f.Key))
+	bg := context.Background()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		row, err := azora.One[benchRow](bg, db, "SELECT id, customer_id, status, total FROM t_bench WHERE id = ?", i%1000+1)
+		if err != nil || row.ID == 0 {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkPointReadParallelPublicURL(b *testing.B) {
+	benchDB(b, 1000)
+	f := engine(b)
+	benchParallelReads(b, f.connectURL(b, f.ConnectURL(testDB), azora.WithToken(f.Key)))
+}
+
 // Many goroutines sharing one connection: requests are multiplexed.
 func BenchmarkPointReadParallel(b *testing.B) {
 	db := benchDB(b, 1000)
@@ -191,4 +213,3 @@ func BenchmarkCollectStructs(b *testing.B) {
 		}
 	}
 }
-
