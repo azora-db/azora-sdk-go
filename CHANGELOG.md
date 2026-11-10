@@ -23,4 +23,12 @@ First version of the Go SDK.
   signed download and upload links.
 - API keys and client tokens, with refresh on the open connection.
 - `azorasql`: a `database/sql` driver, with buffered transactions.
-- `cmd/azora-dev` and seven runnable examples.
+- Units: `Call[R]`, `DB.Call` and `DB.CallRaw` call functions published
+  into the database, exactly once per mutation id (`MutationID`,
+  `Replayed`); a unit's own error is a `*UnitError`; `Bytes` carries
+  blobs as `{"$bytes": …}`. `DB.Units()` publishes bundles, rolls back,
+  and reads the deploy history, run log, triggers and secrets.
+  `ErrUnitsUnsupported` when the server's discovery document does not
+  list `"units"`.
+- `cmd/azora-dev` and eight runnable examples; `azora-dev` publishes
+  `examples/units/units.js` when the engine supports units.
