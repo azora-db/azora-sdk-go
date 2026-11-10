@@ -1,7 +1,8 @@
-// What an app on a user's device does: connect over WebSocket with a
-// short-lived token minted by your backend. This token is pinned to
-// customer 42's orders, so the server filters every subscription and
-// refuses SQL.
+// What an app on a user's device does: connect to the same public URL
+// as everyone else, with a short-lived token minted by your backend.
+// This token is pinned to customer 42's orders, so the server filters
+// every subscription and refuses SQL. The URL says where; the token
+// alone decides what.
 //
 //	go run ./examples/tokens
 package main
@@ -34,7 +35,7 @@ func main() {
 	// token expired, so the connection outlives any single token.
 	fetchToken := func(context.Context) (string, error) { return demo.Env("AZORA_TOKEN_CUSTOMER42"), nil }
 
-	app, err := azora.Connect(ctx, demo.Env("AZORA_WS_URL"), azora.WithCredentialFunc(fetchToken))
+	app, err := azora.Connect(ctx, demo.Env("AZORA_URL"), azora.WithCredentialFunc(fetchToken))
 	demo.Check(err)
 	defer app.Close()
 	if w, ok := app.Welcome(); ok {
@@ -64,9 +65,9 @@ func main() {
 	})
 	defer stop()
 
-	// The backend (API key) writes orders for two customers; only
-	// customer 42's reaches the app.
-	backend, err := azora.Connect(ctx, demo.Env("AZORA_URL"), azora.WithAPIKey(demo.Env("AZORA_API_KEY")))
+	// The backend (same URL, its own token: an API key) writes orders for
+	// two customers; only customer 42's reaches the app.
+	backend, err := azora.Connect(ctx, demo.Env("AZORA_URL"), azora.WithToken(demo.Env("AZORA_TOKEN")))
 	demo.Check(err)
 	defer backend.Close()
 	_, err = backend.Batch(ctx,
