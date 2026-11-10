@@ -276,6 +276,12 @@ func fieldByIndex(v reflect.Value, index []int) reflect.Value {
 	return v
 }
 
+// ScanValue stores one database value (nil, int64, float64, string or
+// []byte) into dest, a pointer, converting as Rows.Scan does. It is for
+// code that receives raw values elsewhere: a Change's row, a Record, a
+// database/sql Scanner.
+func ScanValue(dest any, src any) error { return scanValue(dest, src) }
+
 // scanValue stores one database value into a Scan destination. Common
 // pointer types take a fast path without reflection.
 func scanValue(dest any, src any) error {
