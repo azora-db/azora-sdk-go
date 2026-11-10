@@ -23,7 +23,7 @@ func main() {
 
 	// One azora.DB, shared: database/sql for queries, the SDK itself for
 	// what database/sql has no notion of (live tables, storage).
-	adb, err := azora.Connect(ctx, demo.Env("AZORA_URL"), azora.WithAPIKey(demo.Env("AZORA_API_KEY")))
+	adb, err := azora.Connect(ctx, demo.Env("AZORA_URL"), azora.WithToken(demo.Env("AZORA_TOKEN")))
 	demo.Check(err)
 	defer adb.Close()
 	db := azorasql.OpenDB(adb, azorasql.WithBatchTransactions())
