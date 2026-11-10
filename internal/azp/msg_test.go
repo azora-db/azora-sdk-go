@@ -42,6 +42,12 @@ func sampleMsgs() []Msg {
 		&Sign{ReqID: 12, ObjectID: "o1", TTLSeconds: 60},
 		&Signed{ReqID: 12, URL: "https://x/o/db/o1?sig=1", ExpiresAtMS: 1},
 		&GoAway{Reason: "shutdown", RetryAfterMS: 1000},
+		&Call{ReqID: 13, Unit: "checkout", Args: `{"cartId":"c1"}`, MutationID: "m-3"},
+		&Call{ReqID: 14, Unit: "ping"},
+		&Returned{ReqID: 13, OK: true, Value: `{"orderId":7}`, Replayed: true},
+		&Returned{ReqID: 14, ErrCode: "not_found", ErrMessage: "no such cart", ErrData: `{"cart":"c1"}`},
+		&UnitAdmin{ReqID: 15, Op: "deploy", Body: `{"bundle":"x"}`},
+		&UnitAdminResult{ReqID: 15, Body: `{"version":1}`},
 	}
 }
 
@@ -64,7 +70,7 @@ func TestMessagesRoundTrip(t *testing.T) {
 		_, err = Decode(append(append([]byte{}, b...), 0))
 		require.ErrorIs(t, err, ErrMalformed)
 	}
-	for ty := TypeHello; ty <= TypeOK; ty++ {
+	for ty := TypeHello; ty <= TypeLast; ty++ {
 		require.True(t, seen[ty], "message type %d has a round-trip case", ty)
 	}
 	_, err := Decode(nil)
