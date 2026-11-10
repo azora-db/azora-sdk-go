@@ -492,25 +492,25 @@ func TestEngineFilterMatchesSQL(t *testing.T) {
 		"status IS NOT NULL AND total IS NOT NULL": "",
 		// NOT is two-valued: a comparison with NULL is false, so its
 		// negation is true (SQL would leave it NULL, and skip the row).
-		"NOT status = 'paid'":                      "NOT coalesce(status = 'paid', 0)",
-		"NOT (status = 'paid' OR total > 100)":     "NOT (coalesce(status = 'paid', 0) OR coalesce(total > 100, 0))",
-		"NOT customer_id IN (1, 42)":               "NOT coalesce(customer_id IN (1, 42), 0)",
-		"NOT status IS NULL":                       "",
-		"status ^= 'pa'":                           "substr(status, 1, 2) = 'pa'",
-		"status ^= ''":                             "status IS NOT NULL",
-		"status = 'it''s'":                         "",
-		"note = x'ff00'":                           "",
-		"note > x'01'":                             "",
-		"total = 100":                              "",
-		"total == 100.0 AND status = 'paid'":       "",
-		"id = TRUE OR id = 2":                      "id = 1 OR id = 2",
+		"NOT status = 'paid'":                  "NOT coalesce(status = 'paid', 0)",
+		"NOT (status = 'paid' OR total > 100)": "NOT (coalesce(status = 'paid', 0) OR coalesce(total > 100, 0))",
+		"NOT customer_id IN (1, 42)":           "NOT coalesce(customer_id IN (1, 42), 0)",
+		"NOT status IS NULL":                   "",
+		"status ^= 'pa'":                       "substr(status, 1, 2) = 'pa'",
+		"status ^= ''":                         "status IS NOT NULL",
+		"status = 'it''s'":                     "",
+		"note = x'ff00'":                       "",
+		"note > x'01'":                         "",
+		"total = 100":                          "",
+		"total == 100.0 AND status = 'paid'":   "",
+		"id = TRUE OR id = 2":                  "id = 1 OR id = 2",
 		"status = 'paid' AND (total >= 100 OR customer_id IS NOT NULL) AND id IN (1, 2, 3)": "",
-		"\"status\" = 'new' OR \"total\" < 0":                                                "",
-		"customer_id = '1'":                                                                  "typeof(customer_id) = 'text' AND customer_id = '1'", // no type conversion: never matches
-		"status > 'new'":                                                                     "",
-		"status = ''":                                                                        "",
-		"total > 9999999999":                                                                 "",
-		"customer_id >= -1 AND customer_id < 1":                                              "",
+		"\"status\" = 'new' OR \"total\" < 0":                                               "",
+		"customer_id = '1'":                                                                 "typeof(customer_id) = 'text' AND customer_id = '1'", // no type conversion: never matches
+		"status > 'new'":                                                                    "",
+		"status = ''":                                                                       "",
+		"total > 9999999999":                                                                "",
+		"customer_id >= -1 AND customer_id < 1":                                             "",
 	}
 	for expr, sql := range exprs {
 		if sql == "" {
