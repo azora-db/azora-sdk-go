@@ -7,6 +7,7 @@ import (
 	"math"
 	mrand "math/rand/v2"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,9 +21,17 @@ import (
 // method is safe for concurrent use.
 type DB struct {
 	cfg  Config
-	sec  azp.ClientConfig
 	log  *slog.Logger
 	http *http.Client
+
+	// secMu guards the handshake settings and the WebSocket address: with
+	// a discovered server key both are read again from the server when a
+	// handshake fails (the key may have been rotated).
+	secMu      sync.Mutex
+	sec        azp.ClientConfig
+	wsURL      string // the realtime WebSocket endpoint ("" over TCP)
+	wsBase     string // its address without the path, when discovery may move it
+	discovered bool   // sec came from the discovery document
 
 	ctx    context.Context // canceled by Close
 	cancel context.CancelFunc
@@ -115,7 +124,7 @@ func Open(ctx context.Context, cfg Config) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db := &DB{cfg: cfg, sec: sec, log: cfg.Logger.With("component", "azora-go", "db", cfg.Database),
+	db := &DB{cfg: cfg, sec: sec, wsURL: cfg.WebSocketURL, log: cfg.Logger.With("component", "azora-go", "db", cfg.Database),
 		changed: make(chan struct{}), cred: cfg.Credential, routes: map[uint32]*Subscription{}, subs: map[*Subscription]struct{}{},
 		shapes: shapeCache{m: map[shapeKey]*shapeInfo{}, changed: make(chan struct{})}}
 	db.http = cfg.HTTPClient
@@ -128,6 +137,15 @@ func Open(ctx context.Context, cfg Config) (*DB, error) {
 		db.links = append(db.links, &link{db: db, idx: i})
 	}
 	db.ctx, db.cancel = context.WithCancel(context.Background())
+	if cfg.needsDiscovery() {
+		db.discovered = true
+		db.wsBase = strings.TrimSuffix(cfg.WebSocketURL, DefaultWebSocketPath)
+		if err := db.applyDiscovery(ctx); err != nil {
+			db.cancel()
+			db.closeIdle()
+			return nil, err
+		}
+	}
 	cn, err := db.dial(ctx, db.links[0])
 	if err != nil {
 		db.cancel()
