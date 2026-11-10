@@ -72,13 +72,12 @@ func TestParseURL(t *testing.T) {
 
 	for _, bad := range []string{
 		"",
-		"http://h/app?key=" + key,
 		"azora:///app?key=" + key,
-		"azora://h?key=" + key,                     // no database
-		"azora://h/app",                            // no key, no fingerprint
-		"azora://h/app?key=abc",                    // bad key
-		"azora://h/app?fp=azp1-nope",               // bad fingerprint
-		"azora://h/app?key=" + key + "&x=1",        // unknown parameter
+		"azora://h?key=" + key,              // no database
+		"azora://h/app",                     // no key, no fingerprint
+		"azora://h/app?key=abc",             // bad key
+		"azora://h/app?fp=azp1-nope",        // bad fingerprint
+		"azora://h/app?key=" + key + "&x=1", // unknown parameter
 		"azora://h/app?key=" + key + "&key=" + key, // repeated
 		"azora://h/a/b?key=" + key,                 // not a database name
 		"azora://h:99999/app?key=" + key,
@@ -104,6 +103,10 @@ func FuzzParseURL(f *testing.F) {
 		"azora://h/%zz",
 		"wss://h/rt/v1?db=x&key=" + key,
 		"ws://h?db=x&plaintext=1",
+		"https://h/app?key=" + key,
+		"https://h/base/app",
+		"http://127.0.0.1:8080/app",
+		"http://h/app",
 	} {
 		f.Add(s)
 	}
@@ -116,7 +119,7 @@ func FuzzParseURL(f *testing.F) {
 		// authenticate the server.
 		require.NotEmpty(t, cfg.Database)
 		require.True(t, (cfg.Addr == "") != (cfg.WebSocketURL == ""))
-		require.True(t, cfg.ServerKey != "" || cfg.Fingerprint != "" || cfg.AllowPlaintext)
+		require.True(t, cfg.ServerKey != "" || cfg.Fingerprint != "" || cfg.AllowPlaintext || cfg.DiscoveryURL != "")
 		if cfg.ServerKey != "" {
 			_, err := azora.DecodeServerKey(cfg.ServerKey)
 			require.NoError(t, err)
