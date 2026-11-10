@@ -2,6 +2,7 @@ package azora_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -70,6 +71,30 @@ func ExampleDB_ExecMutation() {
 		log.Fatal(err)
 	}
 	fmt.Println("replayed:", res.Replayed)
+}
+
+func ExampleCall() {
+	var db *azora.DB // from azora.Connect
+	ctx := context.Background()
+
+	type CheckoutArgs struct {
+		CartID string `json:"cartId"`
+	}
+	type CheckoutResult struct {
+		OrderID int64 `json:"orderId"`
+	}
+	// checkout is a mutation unit published into the database: it runs
+	// there, in one transaction, exactly once even if the call is resent.
+	res, err := azora.Call[CheckoutResult](ctx, db, "checkout", CheckoutArgs{CartID: "c1"})
+	var ue *azora.UnitError
+	switch {
+	case errors.As(err, &ue) && ue.Code == azora.UnitCodeNotFound:
+		fmt.Println("no such cart:", ue.Message)
+	case err != nil:
+		log.Fatal(err)
+	default:
+		fmt.Println("order", res.OrderID)
+	}
 }
 
 func ExampleLive() {
