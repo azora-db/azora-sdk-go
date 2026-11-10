@@ -3,6 +3,8 @@ package azora_test
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"runtime"
 	"strings"
@@ -242,4 +244,21 @@ func requireNoLeaks(t testing.TB) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// stringsReader is strings.NewReader, for call sites that read better
+// without the package name.
+func stringsReader(s string) *strings.Reader { return strings.NewReader(s) }
+
+// httpGet fetches a URL without credentials and returns the body of a
+// 200 answer.
+func httpGet(t testing.TB, url string) string {
+	t.Helper()
+	resp, err := http.Get(url)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode, "%s", body)
+	return string(body)
 }
