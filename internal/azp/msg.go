@@ -42,7 +42,15 @@ const (
 	TypeGoAway      MsgType = 21 // server -> client
 	TypeShape       MsgType = 22 // server -> client: column layout of a table version
 	TypeOK          MsgType = 23 // server -> client: request done, no payload
+
+	TypeCall            MsgType = 24 // client -> server: run a unit
+	TypeReturned        MsgType = 25 // server -> client: a unit's result
+	TypeUnitAdmin       MsgType = 26 // client -> server: manage units
+	TypeUnitAdminResult MsgType = 27 // server -> client
 )
+
+// TypeLast is the highest message type.
+const TypeLast = TypeUnitAdminResult
 
 // Msg is a protocol message.
 type Msg interface {
@@ -144,6 +152,14 @@ func newMsg(t MsgType) Msg {
 		return &Shape{}
 	case TypeOK:
 		return &OK{}
+	case TypeCall:
+		return &Call{}
+	case TypeReturned:
+		return &Returned{}
+	case TypeUnitAdmin:
+		return &UnitAdmin{}
+	case TypeUnitAdminResult:
+		return &UnitAdminResult{}
 	}
 	return nil
 }
