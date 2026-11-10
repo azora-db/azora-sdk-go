@@ -2,7 +2,8 @@
 
 `github.com/azora-db/azora-go` connects Go programs to an
 [Azora DB](../azora-engine) database: SQL, writes that apply exactly once,
-live tables, change notifications and file storage, over one connection
+units (functions published into the database), live tables, change
+notifications and file storage, over one connection
 that is encrypted end to end and kept alive for you.
 
 It needs Go 1.23 or later and has three dependencies (`flynn/noise`,
@@ -22,7 +23,7 @@ live.OnUpdate(func(u azora.LiveUpdate[Order]) { render(live.Rows()) }) // every 
 
 - [Install](#install)
 - [Connecting](#connecting)
-- [Reading](#reading) · [Writing](#writing)
+- [Reading](#reading) · [Writing](#writing) · [Units](#units)
 - [Live tables](#live-tables) · [Subscriptions](#subscriptions) · [Watching tables](#watching-tables)
 - [File storage](#file-storage)
 - [database/sql](#databasesql)
@@ -172,6 +173,82 @@ Schema changes (`CREATE`, `ALTER`, `DROP`) need the `ddl` scope, run alone
 in an `Exec`, and cannot carry a mutation id: if the connection drops
 after one was sent, the call fails with `azora.ErrUnknownOutcome` and you
 decide whether to check and run it again.
+
+## Units
+
+Units are functions written in TypeScript and published into the
+database (see the engine's [docs/units.md](../azora-engine/docs/units.md)).
+They run in the engine, next to the data, and any client calls them by
+name:
+
+```go
+type CheckoutArgs struct{ CartID string `json:"cartId"` }
+type CheckoutResult struct{ OrderID int64 `json:"orderId"` }
+
+res, err := azora.Call[CheckoutResult](ctx, db, "checkout", CheckoutArgs{CartID: "c1"})
+err = db.Call(ctx, "checkout", CheckoutArgs{CartID: "c1"}, &res)     // the same without generics
+raw, err := db.CallRaw(ctx, "myOrders", nil)                         // raw.Value: the JSON result
+```
+
+Arguments are encoded with `encoding/json` (`nil`: none) and the result
+decoded into `R` or `out` (a nil `out` discards it). Numbers travel as
+JSON numbers, so integers beyond 2^53 lose precision. A blob is
+`azora.Bytes`, which encodes as `{"$bytes": "<base64>"}`: the unit sees a
+`Uint8Array`, and a blob it returns decodes back into `Bytes`.
+
+**Exactly once.** Every call carries a random mutation id and is sent
+again with the same id after a lost connection: a `mutation` unit is one
+transaction and runs once per id, and a retry within 24 hours returns
+its first result. To keep that across restarts of your own process,
+store an id with the queued call:
+
+```go
+var replayed bool
+res, err := azora.Call[CheckoutResult](ctx, db, "checkout", args,
+	azora.MutationID(id), azora.Replayed(&replayed)) // replayed: answered from the first run
+```
+
+**Errors.** A unit that throws `UnitError(code, message, data)` returns a
+`*azora.UnitError`; anything else it throws has code `failed`. Problems
+around the unit are an `*azora.Error`: `not_found` (no such unit),
+`permission_denied` (an internal unit), `invalid` (arguments that do not
+match the unit's schema), `resource_exhausted` (a timeout or a limit).
+
+```go
+var ue *azora.UnitError
+if errors.As(err, &ue) && ue.Code == azora.UnitCodeNotFound {
+	fmt.Println(ue.Message, string(ue.Data)) // Data: the JSON the unit attached
+}
+```
+
+**Who can call.** Any credential that can open the database, including
+client tokens limited to some tables or rows, which cannot run SQL. A
+unit runs with full access to its database and decides from `ctx.auth`
+what the caller may do.
+
+**Publishing and managing** needs an API key with the `ddl` scope. The
+`azora-units` CLI does it from TypeScript sources; `db.Units()` does it
+from Go with a bundle already built:
+
+```go
+units := db.Units()
+d, err := units.Deploy(ctx, azora.DeployRequest{Bundle: bundle, Note: "v2"}) // d.Version, d.Units
+list, err := units.List(ctx)                    // the active deploy's units
+hist, err := units.Deploys(ctx, 20)             // the deploy history
+_, err = units.Activate(ctx, hist.Deploys[1].Version) // roll back
+runs, err := units.Runs(ctx, azora.RunsQuery{Unit: "checkout", Status: "error", Limit: 50}) // also Before, After (run ids)
+err = units.Secrets().Set(ctx, "STRIPE_KEY", key) // ctx.env.STRIPE_KEY in units
+```
+
+Also `units.Call` (runs internal units too, as the caller),
+`Triggers`, `SkipTrigger`, `Secrets().List` and `Secrets().Unset`.
+Deploys, activations, admin calls and secret changes are not resent
+after a lost connection (`ErrUnknownOutcome`); reads are.
+
+A server that supports units lists `"units"` in its
+`/.well-known/azora.json`. When the SDK read that document (a URL
+without `?key=`) and the feature is missing, calls fail with
+`azora.ErrUnitsUnsupported` without sending anything.
 
 ## Live tables
 
@@ -371,6 +448,7 @@ go run ./examples/quickstart    # terminal 2
 | [`quickstart`](examples/quickstart/main.go) | Connect, read into structs, write, batch |
 | [`live-orders`](examples/live-orders/main.go) | A filtered live table, changes as they commit, checksum verification |
 | [`exactly-once`](examples/exactly-once/main.go) | An outbox replayed after a crash without applying a transfer twice |
+| [`units`](examples/units/main.go) | Typed unit calls, a unit's error, a replayed checkout, a restricted token calling a unit ([`units.js`](examples/units/units.js)) |
 | [`watch`](examples/watch/main.go) | Change notices driving a re-run of an aggregate query |
 | [`tokens`](examples/tokens/main.go) | The same URL with a user's token, which sees only that user's rows |
 | [`files`](examples/files/main.go) | Upload, bind to a row, signed link, resumable upload |
@@ -379,8 +457,10 @@ go run ./examples/quickstart    # terminal 2
 `azora-dev` needs the engine binary: `$AZORA_BIN`, or
 `../azora-engine/bin/azora` (`make build` in the engine repository). It
 writes `AZORA_URL` and `AZORA_TOKEN` to `examples/.env`, which the
-examples read; the tokens example connects to the same URL with a second,
-restricted token.
+examples read; the tokens and units examples connect to the same URL
+with a second, restricted token. When the engine supports units, it
+publishes [`examples/units/units.js`](examples/units/units.js), a bundle
+written by hand in the engine's bundle format (no build step).
 
 ## Developing
 
@@ -396,5 +476,6 @@ and are skipped when it is not found. They cover the three handshake
 modes, connecting by public URL with a pinned and a discovered key, value
 types, exactly-once writes across a dropped connection,
 tokens and their refresh, subscriptions of every kind with resume and
-resynchronization, live tables, file storage, and a server restart in the
-middle of all of it.
+resynchronization, live tables, file storage, units (skipped when the
+engine does not list `"units"` in its discovery document), and a server
+restart in the middle of all of it.
