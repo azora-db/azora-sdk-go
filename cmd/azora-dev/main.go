@@ -86,12 +86,14 @@ func run(envFile, dir string) error {
 	}
 	defer e.Stop()
 
+	// Two values are all a client needs: the public URL and a private
+	// token. The second token and the raw TCP address are for the examples
+	// that show those.
 	env := strings.Join([]string{
-		"AZORA_URL=" + e.URL(db),
-		"AZORA_WS_URL=" + e.WebSocketURL(db),
-		"AZORA_STORAGE_URL=" + e.HTTPURL(),
-		"AZORA_API_KEY=" + key,
+		"AZORA_URL=" + e.ConnectURL(db),
+		"AZORA_TOKEN=" + key,
 		"AZORA_TOKEN_CUSTOMER42=" + customer,
+		"AZORA_TCP_URL=" + e.URL(db),
 	}, "\n") + "\n"
 	if err := os.MkdirAll(filepath.Dir(envFile), 0o755); err != nil {
 		return err
@@ -101,17 +103,17 @@ func run(envFile, dir string) error {
 	}
 	fmt.Printf(`Azora engine is serving the %q database.
 
-  TCP        %s
-  WebSocket  %s
-  Storage    %s
+  AZORA_URL  %s
+  Raw TCP    %s
   Data root  %s
 
-Wrote %s. Run an example in another terminal:
+Wrote %s (AZORA_URL and a private AZORA_TOKEN). Run an example in
+another terminal:
 
   go run ./examples/quickstart
 
 Ctrl+C stops the engine.
-`, db, e.URL(db), e.WebSocketURL(db), e.HTTPURL(), dir, envFile)
+`, db, e.ConnectURL(db), e.URL(db), dir, envFile)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
