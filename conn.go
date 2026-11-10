@@ -83,8 +83,11 @@ func (db *DB) dial(ctx context.Context, l *link) (_ *conn, err error) {
 	}
 	var t azp.Transport
 	var abort func()
-	if db.cfg.WebSocketURL != "" {
-		ws, _, err := websocket.Dial(ctx, db.cfg.WebSocketURL, &websocket.DialOptions{HTTPClient: db.http, Subprotocols: []string{subprotocol}})
+	db.secMu.Lock()
+	sec, wsURL := db.sec, db.wsURL
+	db.secMu.Unlock()
+	if wsURL != "" {
+		ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPClient: db.http, Subprotocols: []string{subprotocol}})
 		if err != nil {
 			return nil, fmt.Errorf("azora: websocket dial: %w", err)
 		}
@@ -92,7 +95,7 @@ func (db *DB) dial(ctx context.Context, l *link) (_ *conn, err error) {
 			ws.CloseNow()
 			return nil, fmt.Errorf("azora: websocket: server did not accept subprotocol %s", subprotocol)
 		}
-		t = azp.NewWSTransport(ws, db.cfg.WebSocketURL, 0)
+		t = azp.NewWSTransport(ws, wsURL, 0)
 		abort = func() { ws.CloseNow() }
 	} else {
 		nc, err := db.cfg.Dial(ctx, "tcp", db.cfg.Addr)
@@ -105,8 +108,15 @@ func (db *DB) dial(ctx context.Context, l *link) (_ *conn, err error) {
 		t = azp.NewStreamTransport(nc, 0)
 		abort = func() { nc.Close() }
 	}
-	az, err := azp.Client(ctx, t, db.sec) // closes t on error
+	az, err := azp.Client(ctx, t, sec) // closes t on error
 	if err != nil {
+		if db.discovered && ctx.Err() == nil {
+			// The key was read from the server; it may have been rotated
+			// since. The next attempt uses whatever the server names now.
+			if derr := db.applyDiscovery(ctx); derr != nil {
+				db.log.Debug("discovery after a failed handshake", "err", derr)
+			}
+		}
 		return nil, fmt.Errorf("azora: %w", err)
 	}
 	defer func() {
