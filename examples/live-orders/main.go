@@ -26,7 +26,7 @@ type Order struct {
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	url, key := demo.Env("AZORA_URL"), azora.WithAPIKey(demo.Env("AZORA_API_KEY"))
+	url, key := demo.Env("AZORA_URL"), azora.WithToken(demo.Env("AZORA_TOKEN"))
 
 	db, err := azora.Connect(ctx, url, key)
 	demo.Check(err)
