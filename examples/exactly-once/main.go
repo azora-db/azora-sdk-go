@@ -54,7 +54,7 @@ func balances(ctx context.Context, db *azora.DB) string {
 }
 
 func connect(ctx context.Context) *azora.DB {
-	db, err := azora.Connect(ctx, demo.Env("AZORA_URL"), azora.WithAPIKey(demo.Env("AZORA_API_KEY")))
+	db, err := azora.Connect(ctx, demo.Env("AZORA_URL"), azora.WithToken(demo.Env("AZORA_TOKEN")))
 	demo.Check(err)
 	return db
 }
