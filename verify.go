@@ -39,7 +39,7 @@ type VerifyResult struct {
 //		u, _ := sub.Next(ctx)
 //		replica.Apply(u)
 //		res, err := sub.Verify(ctx, replica.Checksum)
-//		if errors.Is(err, client.ErrRetry) {
+//		if errors.Is(err, azora.ErrRetry) {
 //			continue
 //		}
 //		...
