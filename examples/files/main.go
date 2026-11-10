@@ -24,9 +24,8 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	db, err := azora.Connect(ctx, demo.Env("AZORA_URL"),
-		azora.WithAPIKey(demo.Env("AZORA_API_KEY")),
-		azora.WithStorageURL(demo.Env("AZORA_STORAGE_URL"))) // the engine's HTTP address
+	// The one URL is also where files are: nothing else to configure.
+	db, err := azora.Connect(ctx, demo.Env("AZORA_URL"), azora.WithToken(demo.Env("AZORA_TOKEN")))
 	demo.Check(err)
 	defer db.Close()
 	files := db.Storage()
