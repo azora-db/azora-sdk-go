@@ -13,3 +13,6 @@
 .vscode/
 *.swp
 .DS_Store
+
+# Connection settings written by cmd/azora-dev (credentials of the local dev engine)
+/examples/.env
