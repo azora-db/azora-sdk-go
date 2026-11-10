@@ -559,6 +559,10 @@ func (db *DB) handle(cn *conn, m azp.Msg, size int) {
 		cn.deliver(x.ReqID, x)
 	case *azp.Signed:
 		cn.deliver(x.ReqID, x)
+	case *azp.Returned:
+		cn.deliver(x.ReqID, x)
+	case *azp.UnitAdminResult:
+		cn.deliver(x.ReqID, x)
 	case *azp.Error:
 		if x.ReqID != 0 {
 			cn.deliver(x.ReqID, x)
