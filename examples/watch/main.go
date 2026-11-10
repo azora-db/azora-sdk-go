@@ -32,7 +32,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	db, err := azora.Connect(ctx, demo.Env("AZORA_URL"), azora.WithAPIKey(demo.Env("AZORA_API_KEY")))
+	db, err := azora.Connect(ctx, demo.Env("AZORA_URL"), azora.WithToken(demo.Env("AZORA_TOKEN")))
 	demo.Check(err)
 	defer db.Close()
 
