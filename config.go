@@ -93,6 +93,13 @@ type Config struct {
 	// used by Storage. With WebSocketURL it defaults to that URL's origin.
 	StorageURL string
 
+	// DiscoveryURL is the server's discovery document
+	// ("https://db.example.com/.well-known/azora.json"). When neither
+	// ServerKey nor Fingerprint is set, the server's key is read from it:
+	// only over HTTPS, where the certificate vouches for the answer, or on
+	// loopback. A connection string of the http(s) form sets it.
+	DiscoveryURL string
+
 	// Dial opens TCP connections (default: a net.Dialer). It is also used
 	// for WebSocket and storage connections when HTTPClient is nil.
 	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -147,24 +154,44 @@ type Welcome struct {
 	Fingerprint string
 }
 
-// ParseURL parses a connection string into a Config:
+// ParseURL parses a connection string into a Config. The usual form is
+// the database's public URL, the server's HTTP address with the database
+// as the last path segment:
 //
-//	azora://host[:port]/<database>?key=<base64 public key>
-//	azora://host/<database>?fp=azp1-xxxx-...              (first contact, XX)
-//	azoras+ws://host[:port][/path]?db=<database>&key=...  (WebSocket over TLS)
-//	azora+ws://host[:port][/path]?db=<database>&key=...   (plain WebSocket)
-//	wss://host[:port][/path]?db=<database>&key=...        (same as azoras+ws)
-//	ws://host[:port][/path]?db=<database>&key=...         (same as azora+ws)
+//	https://db.example.com/<database>?key=<server public key>
+//	https://db.example.com/<database>                     (the key is discovered, see below)
+//	http://127.0.0.1:8080/<database>?key=...
+//
+// It connects over WebSocket on the same address, which is also where
+// file storage is, so nothing else needs configuring. `azora connect
+// <database>` on the server prints it. Without key= (or fp=), the
+// server's key is read from <address>/.well-known/azora.json: over HTTPS
+// the certificate vouches for it; plain HTTP is only accepted for that on
+// loopback. A path prefix before the database is kept
+// (https://example.com/azora/<database>).
+//
+// The other forms name a transport explicitly:
+//
+//	azora://host[:port]/<database>?key=<base64 public key>  (raw TCP)
+//	azora://host/<database>?fp=azp1-xxxx-...                (first contact, XX)
+//	azoras+ws://host[:port][/path]?db=<database>&key=...    (WebSocket over TLS)
+//	azora+ws://host[:port][/path]?db=<database>&key=...     (plain WebSocket)
+//	wss://host[:port][/path]?db=<database>&key=...          (same as azoras+ws)
+//	ws://host[:port][/path]?db=<database>&key=...           (same as azora+ws)
 //
 // The TCP port defaults to 7480 and the WebSocket path to /rt/v1. Query
 // parameters: key (server public key), fp (fingerprint), db (database;
-// for azora:// the path may name it instead), plaintext=1 (tests only).
-// Credentials are not read from URLs: set Config.Credential or pass
-// WithAPIKey / WithToken to Connect.
+// where the path does not name it), plaintext=1 (tests only).
+//
+// A connection string holds nothing secret. Credentials are not read
+// from it: set Config.Credential or pass WithToken to Connect.
 func ParseURL(s string) (Config, error) {
 	cfg, err := parseURL(s)
 	if err != nil {
 		return cfg, err
+	}
+	if cfg.needsDiscovery() {
+		return cfg, discoveryAllowed(cfg.DiscoveryURL)
 	}
 	if _, err := cfg.security(); err != nil {
 		return cfg, err
@@ -246,8 +273,28 @@ func parseURL(s string) (Config, error) {
 			path = DefaultWebSocketPath
 		}
 		cfg.WebSocketURL = ws + "://" + u.Host + path
+	case "https", "http":
+		// The database's public URL: <base>/<database>. Realtime and file
+		// storage are both below the base.
+		path := strings.TrimRight(u.EscapedPath(), "/")
+		i := strings.LastIndexByte(path, '/')
+		if i < 0 || i == len(path)-1 {
+			return cfg, errors.New("azora: parse url: the URL must end with the database name (https://host/<database>)")
+		}
+		name, err := url.PathUnescape(path[i+1:])
+		if err != nil || name == "" {
+			return cfg, fmt.Errorf("azora: parse url: path %q does not end with a database name", u.Path)
+		}
+		if cfg.Database != "" && cfg.Database != name {
+			return cfg, errors.New("azora: parse url: database given in both the path and db=")
+		}
+		cfg.Database = name
+		base := scheme + "://" + u.Host + path[:i]
+		cfg.StorageURL = base
+		cfg.DiscoveryURL = base + discoveryPath
+		cfg.WebSocketURL = "ws" + strings.TrimPrefix(base, "http") + DefaultWebSocketPath
 	default:
-		return cfg, fmt.Errorf("azora: parse url: unsupported scheme %q (azora, azoras+ws, azora+ws, wss, ws)", u.Scheme)
+		return cfg, fmt.Errorf("azora: parse url: unsupported scheme %q (https, http, azora, azoras+ws, azora+ws, wss, ws)", u.Scheme)
 	}
 	if cfg.Database == "" {
 		return cfg, errors.New("azora: parse url: missing database")
@@ -336,7 +383,8 @@ func (cfg *Config) security() (azp.ClientConfig, error) {
 	case cfg.AllowPlaintext:
 		cc.AllowPlaintext = true
 	default:
-		return cc, errors.New("azora: set ServerKey (pinned key) or Fingerprint; AllowPlaintext is for tests only")
+		return cc, errors.New("azora: nothing says how to authenticate the server: use the database's public URL (https://host/<database>), " +
+			"or set ServerKey or Fingerprint; AllowPlaintext is for tests only")
 	}
 	return cc, nil
 }
@@ -371,9 +419,17 @@ func (cfg Config) withDefaults() (Config, azp.ClientConfig, error) {
 	if cfg.PoolSize < 0 || cfg.PoolSize > MaxPoolSize {
 		return cfg, azp.ClientConfig{}, fmt.Errorf("azora: PoolSize %d out of range (1 to %d)", cfg.PoolSize, MaxPoolSize)
 	}
-	cc, err := cfg.security()
-	if err != nil {
-		return cfg, cc, err
+	var cc azp.ClientConfig
+	if cfg.needsDiscovery() {
+		// The key comes from the server once Open can reach it.
+		if err := discoveryAllowed(cfg.DiscoveryURL); err != nil {
+			return cfg, cc, err
+		}
+	} else {
+		var err error
+		if cc, err = cfg.security(); err != nil {
+			return cfg, cc, err
+		}
 	}
 	if cfg.PoolSize == 0 {
 		cfg.PoolSize = 1
