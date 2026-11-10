@@ -92,7 +92,8 @@ func discoveryAllowed(discoveryURL string) error {
 // discovered is what a discovery document yields.
 type discovered struct {
 	serverKey string
-	webSocket string // path of the realtime endpoint below the base URL
+	webSocket string   // path of the realtime endpoint below the base URL
+	features  []string // optional features the server supports ("units")
 }
 
 // discover reads the server's discovery document.
@@ -128,9 +129,10 @@ func discover(ctx context.Context, hc *http.Client, discoveryURL string) (discov
 		return out, fmt.Errorf("azora: discovery: %s answered %s: is this an Azora server's address? (or add ?key=<server key> to the URL)", discoveryURL, resp.Status)
 	}
 	var doc struct {
-		Azora     int    `json:"azora"`
-		ServerKey string `json:"server_key"`
-		WebSocket string `json:"websocket"`
+		Azora     int      `json:"azora"`
+		ServerKey string   `json:"server_key"`
+		WebSocket string   `json:"websocket"`
+		Features  []string `json:"features"`
 	}
 	if err := json.Unmarshal(body, &doc); err != nil || doc.Azora != 1 || doc.ServerKey == "" {
 		return out, fmt.Errorf("azora: discovery: %s did not answer an Azora discovery document", discoveryURL)
@@ -141,7 +143,7 @@ func discover(ctx context.Context, hc *http.Client, discoveryURL string) (discov
 	if doc.WebSocket != "" && (!strings.HasPrefix(doc.WebSocket, "/") || strings.ContainsAny(doc.WebSocket, "?#")) {
 		return out, errors.New("azora: discovery: bad websocket path")
 	}
-	return discovered{serverKey: doc.ServerKey, webSocket: doc.WebSocket}, nil
+	return discovered{serverKey: doc.ServerKey, webSocket: doc.WebSocket, features: doc.Features}, nil
 }
 
 // applyDiscovery reads the discovery document into the DB's
@@ -159,9 +161,28 @@ func (db *DB) applyDiscovery(ctx context.Context) error {
 	}
 	db.secMu.Lock()
 	db.sec = sec
+	db.features = d.features
 	if d.webSocket != "" && db.wsBase != "" {
 		db.wsURL = db.wsBase + d.webSocket
 	}
 	db.secMu.Unlock()
 	return nil
+}
+
+// supports reports whether the server lists feature in its discovery
+// document. Without a discovery document (the key was given) nothing is
+// known and every feature is assumed: the server answers what it does
+// not support with an error.
+func (db *DB) supports(feature string) bool {
+	db.secMu.Lock()
+	defer db.secMu.Unlock()
+	if !db.discovered {
+		return true
+	}
+	for _, f := range db.features {
+		if f == feature {
+			return true
+		}
+	}
+	return false
 }
