@@ -11,14 +11,15 @@ import (
 // Option adjusts the Config that Connect builds from a connection string.
 type Option func(*Config)
 
-// WithAPIKey authenticates with an API key ("azk_...", created with
-// `azora meta key create`). API keys are for servers and tools.
-func WithAPIKey(key string) Option { return func(c *Config) { c.Credential = key } }
-
-// WithToken authenticates with a client token ("azt1...", minted by your
-// backend for one user). Use WithCredentialFunc instead when the token
-// expires during the life of the connection.
+// WithToken sets the private credential the connection authenticates
+// with: an API key ("azk_...", for servers and tools; `azora connect
+// <database> --key <name>` creates one) or a client token ("azt1...",
+// minted by your backend for one user). Use WithCredentialFunc instead
+// when the token expires during the life of the connection.
 func WithToken(token string) Option { return func(c *Config) { c.Credential = token } }
+
+// WithAPIKey is WithToken, named for the case of an API key.
+func WithAPIKey(key string) Option { return WithToken(key) }
 
 // WithCredentialFunc authenticates with whatever f returns, calling it on
 // every (re)connect and whenever the server reports that the credential
