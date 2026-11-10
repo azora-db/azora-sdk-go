@@ -3,7 +3,7 @@
 //
 //	import _ "github.com/azora-db/azora-go/azorasql"
 //
-//	db, err := sql.Open("azora", "azora://db.example.com:7480/shop?key=<server key>&api_key=azk_...")
+//	db, err := sql.Open("azora", os.Getenv("AZORA_URL")) // the credential comes from AZORA_TOKEN
 //	rows, err := db.QueryContext(ctx, "SELECT id, total FROM orders WHERE status = ?", "paid")
 //
 // It gives code written against database/sql (and the libraries built on
@@ -17,8 +17,9 @@
 // A DSN is an azora connection string (see azora.ParseURL) with these
 // extra query parameters:
 //
-//	api_key=azk_...   the credential (or token=azt1...). Without either,
-//	                  the AZORA_API_KEY environment variable is used.
+//	token=...         the credential: an API key or a client token
+//	                  (api_key= is accepted too). Without it, the
+//	                  AZORA_TOKEN environment variable is used.
 //	pool=N            N protocol connections (azora.WithPool)
 //	tx=batch          enable buffered transactions (see below)
 //	timeout=10s       azora.WithRequestTimeout
@@ -166,10 +167,12 @@ func ParseDSN(dsn string) (cfg azora.Config, batchTx bool, err error) {
 	case token != "":
 		cfg.Credential = token
 	default:
-		cfg.Credential = os.Getenv(EnvAPIKey)
+		if cfg.Credential = os.Getenv(azora.EnvToken); cfg.Credential == "" {
+			cfg.Credential = os.Getenv(EnvAPIKey)
+		}
 	}
 	if cfg.Credential == "" {
-		return cfg, false, fmt.Errorf("azorasql: parse dsn: no credential: add api_key= or token=, or set %s", EnvAPIKey)
+		return cfg, false, fmt.Errorf("azorasql: parse dsn: no credential: add token= to the DSN, or set %s", azora.EnvToken)
 	}
 	if pool != "" {
 		n, err := strconv.Atoi(pool)
