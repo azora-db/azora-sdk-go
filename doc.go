@@ -1,5 +1,6 @@
 // Package azora is the Go client of Azora DB: SQL, writes that apply
-// exactly once, live tables, change notifications and file storage, over
+// exactly once, units (functions published into the database), live
+// tables, change notifications and file storage, over
 // one connection that is encrypted end to end and kept alive for you.
 //
 //	db, err := azora.ConnectEnv(ctx) // AZORA_URL and AZORA_TOKEN
@@ -43,6 +44,17 @@
 // one transaction. ExecMutation and BatchMutation take the mutation id
 // from the caller, which keeps a write exactly-once across restarts of
 // the calling process.
+//
+// # Units
+//
+// Units are functions published into the database (written in
+// TypeScript, run by the engine next to the data) and called by name:
+// Call[R] and DB.Call send the arguments as JSON and decode the result.
+// A mutation unit is one transaction, run exactly once per mutation id;
+// every call carries one and resends it after a lost connection. A unit
+// that throws returns a *UnitError; Bytes carries binary values. Units
+// can be called with any credential, including client tokens that cannot
+// run SQL. DB.Units publishes bundles and reads the run log (ddl scope).
 //
 // # Realtime
 //
