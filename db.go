@@ -29,9 +29,10 @@ type DB struct {
 	// handshake fails (the key may have been rotated).
 	secMu      sync.Mutex
 	sec        azp.ClientConfig
-	wsURL      string // the realtime WebSocket endpoint ("" over TCP)
-	wsBase     string // its address without the path, when discovery may move it
-	discovered bool   // sec came from the discovery document
+	wsURL      string   // the realtime WebSocket endpoint ("" over TCP)
+	wsBase     string   // its address without the path, when discovery may move it
+	discovered bool     // sec came from the discovery document
+	features   []string // the discovery document's features (when discovered)
 
 	ctx    context.Context // canceled by Close
 	cancel context.CancelFunc
