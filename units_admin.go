@@ -19,13 +19,56 @@ const (
 	UnitKindOnChange = "onChange"
 )
 
+// Statuses of a run (Run.Status, RunsQuery.Status).
+const (
+	// RunStatusOK: the unit ran and returned.
+	RunStatusOK = "ok"
+	// RunStatusError: the unit ran and threw, timed out or hit a limit.
+	RunStatusError = "error"
+	// RunStatusReplayed: a retry answered from the stored result of an
+	// earlier call with the same mutation id; the unit did not run again.
+	RunStatusReplayed = "replayed"
+	// RunStatusRejected: refused before the unit ran (arguments that do
+	// not match its schema, an internal unit called by a client).
+	RunStatusRejected = "rejected"
+)
+
+// What started a run (Run.Trigger).
+const (
+	// RunTriggerCall: a client (DB.Call, DB.CallRaw, Call).
+	RunTriggerCall = "call"
+	// RunTriggerSchedule: a schedule unit's timer.
+	RunTriggerSchedule = "schedule"
+	// RunTriggerChange: an onChange unit's changes.
+	RunTriggerChange = "change"
+	// RunTriggerJob: a job scheduled with ctx.scheduler.
+	RunTriggerJob = "job"
+	// RunTriggerAdmin: the engine's admin API (and the dashboard).
+	RunTriggerAdmin = "admin"
+	// RunTriggerCLI: Units.Call (the UnitAdmin "call" operation, which
+	// azora-units call also uses).
+	RunTriggerCLI = "cli"
+	// RunTriggerMCP: an AI agent through azora mcp.
+	RunTriggerMCP = "mcp"
+)
+
+// States of a job (Job.State, JobsQuery.State).
+const (
+	// JobStatePending: waiting for its time, or for its next attempt.
+	JobStatePending = "pending"
+	// JobStateFailed: its unit threw on every attempt; it stays until
+	// Units.RetryJob or Units.CancelJob (or the run log's retention).
+	JobStateFailed = "failed"
+)
+
 // Units manages a database's units: publishing (deploys), rollback, the
 // run log, triggers and secrets. Every method needs a credential with the
 // ddl (or admin) scope. Get one with DB.Units.
 //
-// Methods that change state (Deploy, Activate, Call, SkipTrigger and the
-// secret setters) are not sent again after a lost connection: they
-// return ErrUnknownOutcome. Reads are retried like queries.
+// Methods that change state (Deploy, Activate, Call, SkipTrigger,
+// CancelJob, RetryJob and the secret setters) are not sent again after a
+// lost connection: they return ErrUnknownOutcome. Reads are retried like
+// queries.
 type Units struct{ db *DB }
 
 // Units returns the facade over the database's units.
@@ -140,13 +183,14 @@ type Run struct {
 	At   time.Time `json:"at"`
 	Unit string    `json:"unit"`
 	Kind string    `json:"kind"`
-	// Trigger is "call", "schedule", "change" or "admin".
+	// Trigger is what started the run: one of the RunTrigger constants
+	// (a server may add others).
 	Trigger string `json:"trigger"`
 	// Principal is who ran it (key:<name>, a token's subject,
-	// admin:<id>, system).
+	// admin:<id>, system, job:<id> for a job).
 	Principal string        `json:"principal"`
 	Duration  time.Duration `json:"duration_ms"`
-	// Status is "ok", "error" or "replayed".
+	// Status is one of the RunStatus constants.
 	Status string `json:"status"`
 	Error  string `json:"error"`
 	// Logs is what the unit logged with ctx.log (the server keeps the
@@ -191,8 +235,8 @@ type RunsQuery struct {
 	// ID (to follow the log).
 	Before int64 `json:"before,omitempty"`
 	After  int64 `json:"after,omitempty"`
-	// Status keeps the runs with this status ("ok", "error",
-	// "replayed").
+	// Status keeps the runs with this status (one of the RunStatus
+	// constants: "ok", "error", "replayed", "rejected").
 	Status string `json:"status,omitempty"`
 }
 
@@ -243,6 +287,80 @@ func (t Trigger) MarshalJSON() ([]byte, error) {
 		NextAt int64 `json:"next_at"`
 		LastAt int64 `json:"last_at"`
 	}{plain(t), toMillis(t.NextAt), toMillis(t.LastAt)})
+}
+
+// Job is a unit run scheduled for later by a unit, with
+// ctx.scheduler.after or ctx.scheduler.at (see "Jobs" in the engine's
+// docs/units.md). A job is removed once it ran; a job whose unit threw
+// on every attempt stays, failed, until it is retried or canceled.
+type Job struct {
+	// ID is the job's id ("job_…"): what ctx.scheduler returned, the
+	// run's mutation id, and the principal job:<id> it runs as.
+	ID string `json:"id"`
+	// Unit is the mutation or action it runs, with Args (JSON; null for
+	// none).
+	Unit string          `json:"unit"`
+	Args json.RawMessage `json:"args"`
+	// RunAt is when it runs next (a failed job: when it last failed).
+	RunAt time.Time `json:"run_at"`
+	// CreatedAt is when it was scheduled, CreatedBy the principal that
+	// ran the scheduling unit and Source that unit.
+	CreatedAt time.Time `json:"created_at"`
+	CreatedBy string    `json:"created_by"`
+	Source    string    `json:"source"`
+	// Attempts counts the failed runs so far.
+	Attempts int `json:"attempts"`
+	// State is one of the JobState constants.
+	State string `json:"state"`
+	// Error is the last failed run's error.
+	Error string `json:"error"`
+}
+
+// UnmarshalJSON decodes the wire form (times in unix milliseconds).
+func (j *Job) UnmarshalJSON(b []byte) error {
+	type plain Job
+	w := struct {
+		*plain
+		RunAt     int64 `json:"run_at"`
+		CreatedAt int64 `json:"created_at"`
+	}{plain: (*plain)(j)}
+	if err := json.Unmarshal(b, &w); err != nil {
+		return err
+	}
+	j.RunAt, j.CreatedAt = fromMillis(w.RunAt), fromMillis(w.CreatedAt)
+	return nil
+}
+
+// MarshalJSON encodes the wire form.
+func (j Job) MarshalJSON() ([]byte, error) {
+	type plain Job
+	return json.Marshal(struct {
+		plain
+		RunAt     int64 `json:"run_at"`
+		CreatedAt int64 `json:"created_at"`
+	}{plain(j), toMillis(j.RunAt), toMillis(j.CreatedAt)})
+}
+
+// JobsQuery selects jobs (Units.Jobs).
+type JobsQuery struct {
+	// State keeps the jobs in this state (one of the JobState
+	// constants; "": both).
+	State string `json:"state,omitempty"`
+	// Unit keeps the jobs of one unit.
+	Unit string `json:"unit,omitempty"`
+	// Limit is the most jobs returned (0: the server's default, 100).
+	Limit int `json:"limit,omitempty"`
+}
+
+// JobList is the outcome of Units.Jobs.
+type JobList struct {
+	// Jobs are the selected jobs: pending ones first, the next due
+	// first, then failed ones.
+	Jobs []Job `json:"jobs"`
+	// Pending and Failed count all the database's jobs in each state,
+	// whatever the query selected.
+	Pending int64 `json:"pending"`
+	Failed  int64 `json:"failed"`
 }
 
 // Secret is a secret's name; values are never read back.
@@ -415,6 +533,56 @@ func (u *Units) SkipTrigger(ctx context.Context, unit string) (skipped int64, er
 		return 0, err
 	}
 	return out.Skipped, nil
+}
+
+// Jobs returns the jobs units scheduled with ctx.scheduler that have not
+// run yet (pending) or gave up (failed), with the database's counts of
+// each.
+func (u *Units) Jobs(ctx context.Context, q JobsQuery) (*JobList, error) {
+	var out JobList
+	if err := u.admin(ctx, retryable, "jobs", q, &out); err != nil {
+		return nil, err
+	}
+	if out.Jobs == nil {
+		out.Jobs = []Job{}
+	}
+	return &out, nil
+}
+
+// CancelJob removes a job, pending or failed; removed is false when there
+// was none (it already ran, or the id is unknown). A job that is running
+// finishes. Like Secrets.Unset it is not sent again after a lost
+// connection (ErrUnknownOutcome): a resend would report false for a job
+// the first send removed. Calling it again yourself is harmless.
+func (u *Units) CancelJob(ctx context.Context, id string) (removed bool, err error) {
+	if id == "" {
+		return false, errors.New("azora: empty job id")
+	}
+	var out struct {
+		Removed bool `json:"removed"`
+	}
+	body := struct {
+		ID string `json:"id"`
+	}{id}
+	if err := u.admin(ctx, once, "jobs.cancel", body, &out); err != nil {
+		return false, err
+	}
+	return out.Removed, nil
+}
+
+// RetryJob makes a failed job run again now, with its attempts reset. A
+// job that is not failed is refused (CodeInvalid), an unknown id is
+// CodeNotFound. It is not sent again after a lost connection
+// (ErrUnknownOutcome): the job may already be running, or have failed
+// again, and a resend would retry it twice. Check with Jobs.
+func (u *Units) RetryJob(ctx context.Context, id string) error {
+	if id == "" {
+		return errors.New("azora: empty job id")
+	}
+	body := struct {
+		ID string `json:"id"`
+	}{id}
+	return u.admin(ctx, once, "jobs.retry", body, nil)
 }
 
 // Secrets returns the facade over the units' secrets (ctx.env).
