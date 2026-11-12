@@ -30,5 +30,15 @@ First version of the Go SDK.
   and reads the deploy history, run log, triggers and secrets.
   `ErrUnitsUnsupported` when the server's discovery document does not
   list `"units"`.
+- Units jobs: `Units.Jobs` lists the jobs units scheduled with
+  `ctx.scheduler` (pending and failed, with counts), `Units.CancelJob`
+  removes one and `Units.RetryJob` runs a failed one again; `Job`,
+  `JobsQuery`, `JobList` and the `JobState` constants. Cancel and retry
+  are not resent after a lost connection (`ErrUnknownOutcome`).
+- Run log constants: `RunStatusOK`, `RunStatusError`, `RunStatusReplayed`
+  and `RunStatusRejected` (refused before the unit ran, also accepted by
+  `RunsQuery.Status`); `RunTriggerCall`, `RunTriggerSchedule`,
+  `RunTriggerChange`, `RunTriggerJob`, `RunTriggerAdmin`, `RunTriggerCLI`
+  (what `Units.Call` is logged as) and `RunTriggerMCP`.
 - `cmd/azora-dev` and eight runnable examples; `azora-dev` publishes
   `examples/units/units.js` when the engine supports units.
