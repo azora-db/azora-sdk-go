@@ -1,6 +1,7 @@
 package azora_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -430,6 +431,174 @@ func TestEngineUnitsOnChange(t *testing.T) {
 	after := trigger("seenEv").LastAt
 	require.False(t, after.IsZero())
 	require.False(t, after.Before(before), "%v before %v", after, before)
+}
+
+// TestEngineUnitsJobs schedules jobs with ctx.scheduler and manages them
+// with Units.Jobs, CancelJob and RetryJob; it also checks the run log's
+// "job", "cli" and "rejected" values.
+func TestEngineUnitsJobs(t *testing.T) {
+	unitsEngine(t) // skips without units
+	// Two attempts per job keeps the failing one short: its runs are about
+	// 1s apart (jobs are checked once a second, the first backoff is 1s).
+	f := newEngine(t, map[string]map[string]any{"units": {"job_attempts": 2}})
+	c, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	db := f.connect(t)
+	units := db.Units()
+	mustExec(t, db, "CREATE TABLE notes (n INTEGER PRIMARY KEY, msg TEXT NOT NULL, principal TEXT NOT NULL, trigger TEXT NOT NULL)")
+
+	const bundle = `(function () {
+  const unit = (kind, def) => Object.assign({ "~azora": 1, kind, args: null, internal: false, description: "" }, def);
+  const msgArgs = { type: "object", properties: { msg: { type: "string" } }, required: ["msg"], additionalProperties: false };
+  globalThis.__azora_units = {
+    later: unit("mutation", { handler: (ctx) => ctx.scheduler.after(3600e3, "note", { msg: "later" }) }),
+    soon: unit("mutation", { handler: (ctx) => ctx.scheduler.after(0, "note", { msg: "soon" }) }),
+    doomed: unit("mutation", { handler: (ctx) => ctx.scheduler.after(100, "boom", { n: 1 }) }),
+    note: unit("mutation", { internal: true, args: msgArgs, handler(ctx, { msg }) {
+      ctx.db.exec("INSERT INTO notes(msg, principal, trigger) VALUES (?, ?, ?)", msg, ctx.auth.principal, ctx.unit.trigger);
+    } }),
+    boom: unit("mutation", { internal: true, handler() { throw new Error("boom always fails"); } }),
+  };
+})();`
+	_, err := units.Deploy(c, azora.DeployRequest{Bundle: bundle, Note: "jobs"})
+	require.NoError(t, err)
+
+	findJob := func(q azora.JobsQuery, id string) (azora.Job, *azora.JobList, bool) {
+		l, err := units.Jobs(c, q)
+		require.NoError(t, err)
+		for _, j := range l.Jobs {
+			if j.ID == id {
+				return j, l, true
+			}
+		}
+		return azora.Job{}, l, false
+	}
+
+	// A job far ahead waits, pending.
+	start := time.Now()
+	later, err := azora.Call[string](c, db, "later", nil)
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(later, "job_"), later)
+	doomed, err := azora.Call[string](c, db, "doomed", nil)
+	require.NoError(t, err)
+	j, l, ok := findJob(azora.JobsQuery{State: azora.JobStatePending, Unit: "note"}, later)
+	require.True(t, ok, "%+v", l)
+	require.Len(t, l.Jobs, 1, "the unit filter")
+	require.GreaterOrEqual(t, l.Pending, int64(1))
+	require.Equal(t, "note", j.Unit)
+	require.JSONEq(t, `{"msg":"later"}`, string(j.Args))
+	require.Equal(t, azora.JobStatePending, j.State)
+	require.Equal(t, "later", j.Source)
+	require.Equal(t, "key:app", j.CreatedBy)
+	require.Zero(t, j.Attempts)
+	require.Empty(t, j.Error)
+	require.WithinDuration(t, start.Add(time.Hour), j.RunAt, time.Minute)
+	require.WithinDuration(t, start, j.CreatedAt, time.Minute)
+	err = units.RetryJob(c, later)
+	require.True(t, azora.IsInvalid(err), "only failed jobs are retried: %v", err)
+	err = units.RetryJob(c, "job_nosuchjob")
+	require.True(t, azora.IsNotFound(err), "%v", err)
+
+	// A job whose unit always throws runs job_attempts times, then is kept
+	// as failed.
+	var failed azora.Job
+	eventually(t, 30*time.Second, func() bool {
+		failed, _, ok = findJob(azora.JobsQuery{State: azora.JobStateFailed}, doomed)
+		return ok
+	}, "the doomed job failed")
+	require.Equal(t, "boom", failed.Unit)
+	require.Equal(t, 2, failed.Attempts)
+	require.Contains(t, failed.Error, "boom always fails")
+	require.Equal(t, "doomed", failed.Source)
+	jl, err := units.Jobs(c, azora.JobsQuery{})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), jl.Failed)
+	require.Len(t, jl.Jobs, 2)
+	require.Equal(t, later, jl.Jobs[0].ID, "pending jobs first")
+	require.Equal(t, doomed, jl.Jobs[1].ID)
+	runs, err := units.Runs(c, azora.RunsQuery{Unit: "boom"})
+	require.NoError(t, err)
+	require.Len(t, runs, 2, "one run per attempt")
+	for _, r := range runs {
+		require.Equal(t, azora.RunTriggerJob, r.Trigger)
+		require.Equal(t, azora.RunStatusError, r.Status)
+		require.Equal(t, "job:"+doomed, r.Principal)
+	}
+
+	// Retried, it runs its attempts again and fails again.
+	require.NoError(t, units.RetryJob(c, doomed))
+	eventually(t, 30*time.Second, func() bool {
+		runs, err = units.Runs(c, azora.RunsQuery{Unit: "boom"})
+		require.NoError(t, err)
+		return len(runs) == 4
+	}, "the retried job ran its attempts again (%d runs)", len(runs))
+	eventually(t, 10*time.Second, func() bool {
+		failed, _, ok = findJob(azora.JobsQuery{State: azora.JobStateFailed}, doomed)
+		return ok
+	}, "the retried job failed again")
+	require.Equal(t, 2, failed.Attempts, "attempts were reset by the retry")
+
+	// Canceling removes pending and failed jobs; again, there is nothing.
+	for _, id := range []string{later, doomed} {
+		removed, err := units.CancelJob(c, id)
+		require.NoError(t, err)
+		require.True(t, removed, id)
+		removed, err = units.CancelJob(c, id)
+		require.NoError(t, err)
+		require.False(t, removed, id)
+	}
+	jl, err = units.Jobs(c, azora.JobsQuery{})
+	require.NoError(t, err)
+	require.Empty(t, jl.Jobs)
+	require.Zero(t, jl.Pending)
+	require.Zero(t, jl.Failed)
+
+	// A job that succeeds runs as job:<id> with trigger "job", then is
+	// gone.
+	soon, err := azora.Call[string](c, db, "soon", nil)
+	require.NoError(t, err)
+	type note struct{ Msg, Principal, Trigger string }
+	notes := func() []note {
+		rows, err := azora.All[note](c, db, "SELECT msg, principal, trigger FROM notes ORDER BY n")
+		require.NoError(t, err)
+		return rows
+	}
+	eventually(t, 15*time.Second, func() bool { return len(notes()) > 0 }, "the job ran")
+	require.Equal(t, []note{{"soon", "job:" + soon, "job"}}, notes())
+	runs, err = units.Runs(c, azora.RunsQuery{Unit: "note"})
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	require.Equal(t, azora.RunTriggerJob, runs[0].Trigger)
+	require.Equal(t, azora.RunStatusOK, runs[0].Status)
+	require.Equal(t, "job:"+soon, runs[0].Principal)
+	_, _, ok = findJob(azora.JobsQuery{}, soon)
+	require.False(t, ok, "a job that ran is removed")
+
+	// Units.Call is logged with trigger "cli"; client calls refused before
+	// the unit ran (an internal unit, arguments that do not match) are
+	// "rejected".
+	_, err = units.Call(c, "note", map[string]string{"msg": "admin"})
+	require.NoError(t, err)
+	runs, err = units.Runs(c, azora.RunsQuery{Unit: "note", Limit: 1})
+	require.NoError(t, err)
+	require.Equal(t, azora.RunTriggerCLI, runs[0].Trigger)
+	require.Equal(t, azora.RunStatusOK, runs[0].Status)
+	require.Equal(t, "key:app", runs[0].Principal)
+
+	err = db.Call(c, "note", map[string]string{"msg": "x"}, nil)
+	require.True(t, azora.IsPermissionDenied(err), "%v", err)
+	_, err = units.Call(c, "note", map[string]int{"msg": 1})
+	require.True(t, azora.IsInvalid(err), "%v", err)
+	rejected, err := units.Runs(c, azora.RunsQuery{Status: azora.RunStatusRejected})
+	require.NoError(t, err)
+	require.Len(t, rejected, 2, "%+v", rejected)
+	for _, r := range rejected {
+		require.Equal(t, "note", r.Unit)
+		require.Equal(t, azora.RunStatusRejected, r.Status)
+		require.NotEmpty(t, r.Error)
+	}
+	require.Equal(t, azora.RunTriggerCLI, rejected[0].Trigger, "newest first")
+	require.Equal(t, azora.RunTriggerCall, rejected[1].Trigger)
 }
 
 // mustField returns a field of a JSON object.
