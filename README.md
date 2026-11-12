@@ -242,8 +242,40 @@ err = units.Secrets().Set(ctx, "STRIPE_KEY", key) // ctx.env.STRIPE_KEY in units
 
 Also `units.Call` (runs internal units too, as the caller),
 `Triggers`, `SkipTrigger`, `Secrets().List` and `Secrets().Unset`.
-Deploys, activations, admin calls and secret changes are not resent
-after a lost connection (`ErrUnknownOutcome`); reads are.
+
+**The run log.** Each `Run` has a `Status`: `azora.RunStatusOK`,
+`RunStatusError` (the unit threw, timed out or hit a limit),
+`RunStatusReplayed` (answered from an earlier call's stored result) or
+`RunStatusRejected` (refused before the unit ran: arguments that do not
+match, an internal unit called by a client). Its `Trigger` says what
+started it: `RunTriggerCall` (a client), `RunTriggerSchedule`,
+`RunTriggerChange` (onChange), `RunTriggerJob`, `RunTriggerAdmin` (the
+admin API and dashboard), `RunTriggerCLI` (`units.Call` and
+`azora-units call`) or `RunTriggerMCP`.
+
+**Jobs.** A unit can run a mutation or action later with
+`ctx.scheduler.after(ms, unit, args)` or `.at(time, unit, args)` (see
+"Jobs" in [docs/units.md](../azora-engine/docs/units.md#jobs)). Jobs run
+under `azora serve`, as principal `job:<id>`, with trigger `job` in the
+run log. A job whose unit keeps throwing is retried with backoff up to
+`units.job_attempts` times, then kept as failed:
+
+```go
+jobs, err := units.Jobs(ctx, azora.JobsQuery{State: azora.JobStateFailed, Limit: 50}) // also Unit
+fmt.Println(jobs.Pending, jobs.Failed)              // counts of the whole database
+for _, j := range jobs.Jobs {                       // j.ID, j.Unit, j.Args, j.RunAt, j.Attempts, j.Error ...
+	err = units.RetryJob(ctx, j.ID)                 // a failed job runs again now, attempts reset
+}
+removed, err := units.CancelJob(ctx, id)            // pending or failed; false: no such job
+```
+
+`RetryJob` refuses a job that is not failed (`invalid`) and an unknown id
+(`not_found`).
+
+Deploys, activations, admin calls, trigger skips, job cancels and
+retries, and secret changes are not resent after a lost connection
+(`ErrUnknownOutcome`); reads are. Canceling again is harmless; before
+retrying a retry, check `Jobs`: the job may already be running.
 
 A server that supports units lists `"units"` in its
 `/.well-known/azora.json`. When the SDK read that document (a URL
