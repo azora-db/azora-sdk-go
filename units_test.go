@@ -295,7 +295,20 @@ func TestFakeUnitsAdmin(t *testing.T) {
 			"secrets.list":  `{"secrets":[{"name":"STRIPE_KEY","updated_at":1762772400000}]}`,
 			"secrets.set":   `{}`,
 			"secrets.unset": `{"removed":true}`,
+			"jobs": `{"jobs":[{"id":"job_a","unit":"remind","args":{"orderId":7},"run_at":1762772400123,"created_at":1762772400000,` +
+				`"created_by":"key:app","source":"placeOrder","attempts":2,"state":"failed","error":"Error: smtp down"},` +
+				`{"id":"job_b","unit":"tick","args":null,"run_at":1762772400123,"created_at":1762772400000,"created_by":"job:job_z","source":"tick","attempts":0,"state":"pending"}],` +
+				`"pending":4,"failed":1}`,
+			"jobs.cancel": `{"removed":true}`,
+			"jobs.retry":  `{}`,
 		}[x.Op]
+		if x.Op == "jobs" && strings.Contains(x.Body, `"none"`) {
+			body = `{"jobs":[],"pending":0,"failed":0}`
+		}
+		if x.Op == "jobs.retry" && strings.Contains(x.Body, `"job_p"`) {
+			ss.Send(&azp.Error{ReqID: x.ReqID, Code: azp.CodeInvalid, Message: "job job_p is pending, not failed"})
+			return
+		}
 		if x.Op == "call" && strings.Contains(x.Body, `"boom"`) {
 			body = `{"ok":false,"value":null,"error":{"code":"conflict","message":"taken","data":[1]}}`
 		}
@@ -342,7 +355,7 @@ func TestFakeUnitsAdmin(t *testing.T) {
 	require.ErrorAs(t, err, &ue)
 	require.Equal(t, &azora.UnitError{Unit: "boom", Code: azora.UnitCodeConflict, Message: "taken", Data: json.RawMessage(`[1]`)}, ue)
 
-	runs, err := units.Runs(c, azora.RunsQuery{Limit: 10, Unit: "checkout", Before: 100, Status: "error"})
+	runs, err := units.Runs(c, azora.RunsQuery{Limit: 10, Unit: "checkout", Before: 100, Status: azora.RunStatusError})
 	require.NoError(t, err)
 	require.Equal(t, []azora.Run{{ID: 9, At: at, Unit: "checkout", Kind: "mutation", Trigger: "call", Principal: "user:42",
 		Duration: 1500 * time.Microsecond, Status: "error", Error: "no such cart", Logs: "info checkout c1\n"}}, runs)
@@ -366,6 +379,34 @@ func TestFakeUnitsAdmin(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, removed)
 
+	jobs, err := units.Jobs(c, azora.JobsQuery{State: azora.JobStateFailed, Unit: "remind", Limit: 5})
+	require.NoError(t, err)
+	created := time.UnixMilli(1762772400000)
+	require.Equal(t, &azora.JobList{Pending: 4, Failed: 1, Jobs: []azora.Job{
+		{ID: "job_a", Unit: "remind", Args: json.RawMessage(`{"orderId":7}`), RunAt: at, CreatedAt: created,
+			CreatedBy: "key:app", Source: "placeOrder", Attempts: 2, State: azora.JobStateFailed, Error: "Error: smtp down"},
+		{ID: "job_b", Unit: "tick", Args: json.RawMessage(`null`), RunAt: at, CreatedAt: created,
+			CreatedBy: "job:job_z", Source: "tick", State: azora.JobStatePending},
+	}}, jobs)
+	none, err := units.Jobs(c, azora.JobsQuery{Unit: "none"})
+	require.NoError(t, err)
+	require.Equal(t, &azora.JobList{Jobs: []azora.Job{}}, none)
+	removed, err = units.CancelJob(c, "job_a")
+	require.NoError(t, err)
+	require.True(t, removed)
+	require.NoError(t, units.RetryJob(c, "job_a"))
+	err = units.RetryJob(c, "job_p")
+	require.True(t, azora.IsInvalid(err), "%v", err)
+	mu.Lock()
+	before := len(got)
+	mu.Unlock()
+	_, err = units.CancelJob(c, "")
+	require.ErrorContains(t, err, "empty job id")
+	require.ErrorContains(t, units.RetryJob(c, ""), "empty job id")
+	mu.Lock()
+	require.Len(t, got, before, "refused before anything is sent")
+	mu.Unlock()
+
 	mu.Lock()
 	bodies := map[string]string{}
 	for _, g := range got {
@@ -383,6 +424,15 @@ func TestFakeUnitsAdmin(t *testing.T) {
 	require.JSONEq(t, `{}`, bodies["secrets.list"])
 	require.JSONEq(t, `{"name":"STRIPE_KEY","value":"sk_1"}`, bodies["secrets.set"])
 	require.JSONEq(t, `{"name":"STRIPE_KEY"}`, bodies["secrets.unset"])
+	require.JSONEq(t, `{"unit":"none"}`, bodies["jobs"])
+	require.JSONEq(t, `{"id":"job_a"}`, bodies["jobs.cancel"])
+	require.JSONEq(t, `{"id":"job_p"}`, bodies["jobs.retry"])
+	for _, g := range got {
+		if g.Op == "jobs" {
+			require.JSONEq(t, `{"state":"failed","unit":"remind","limit":5}`, g.Body)
+			break
+		}
+	}
 
 	// Reads are sent again after a lost connection; changes are not.
 	drop.Store(true)
@@ -393,6 +443,14 @@ func TestFakeUnitsAdmin(t *testing.T) {
 	require.ErrorIs(t, err, azora.ErrUnknownOutcome)
 	drop.Store(true)
 	require.ErrorIs(t, secrets.Set(c, "A", "b"), azora.ErrUnknownOutcome)
+	drop.Store(true)
+	_, err = units.Jobs(c, azora.JobsQuery{})
+	require.NoError(t, err, "listing jobs is a read")
+	drop.Store(true)
+	_, err = units.CancelJob(c, "job_a")
+	require.ErrorIs(t, err, azora.ErrUnknownOutcome)
+	drop.Store(true)
+	require.ErrorIs(t, units.RetryJob(c, "job_a"), azora.ErrUnknownOutcome)
 }
 
 func TestUnitStructsWireForm(t *testing.T) {
@@ -402,6 +460,7 @@ func TestUnitStructsWireForm(t *testing.T) {
 		&azora.Run{ID: 2, At: at, Unit: "u", Duration: 2500 * time.Microsecond, Logs: "x"},
 		&azora.Trigger{Unit: "u", NextAt: at, Cursor: 5},
 		&azora.Secret{Name: "A", UpdatedAt: at},
+		&azora.Job{ID: "job_a", Unit: "u", Args: json.RawMessage(`{"a":1}`), RunAt: at, CreatedAt: at, State: azora.JobStatePending},
 	} {
 		b, err := json.Marshal(v)
 		require.NoError(t, err)
@@ -427,6 +486,8 @@ func newOf(v any) any {
 		return &azora.Trigger{}
 	case *azora.Secret:
 		return &azora.Secret{}
+	case *azora.Job:
+		return &azora.Job{}
 	}
 	panic("unknown type")
 }
